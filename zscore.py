@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 Created on Mon Jan 15 16:23:45 2018
@@ -6,28 +6,26 @@ Created on Mon Jan 15 16:23:45 2018
 @author: hxj
 """
 
-#!/usr/bin/env python2
-# -*- coding: utf-8 -*-
-"""
-Created on Tue Jan  9 20:32:28 2018
-
-@author: hxj
-"""
-
+from absl import flags
+from absl import app 
 import wave
 import numpy as np
 import python_speech_features as ps
 import os
 import glob
-import cPickle
+import pickle
+from utils import dense_to_one_hot
+
 #import base
 #import sigproc
 eps = 1e-5
+
 def wgn(x, snr):
-    snr = 10**(snr/10.0)
+    snr = 10**(snr/10.0) # db to amplitude
     xpower = np.sum(x**2)/len(x)
-    npower = xpower / snr
-    return np.random.randn(len(x)) * np.sqrt(npower)
+    npower = xpower / snr # noise power 
+    return np.random.randn( len(x) ) * np.sqrt(npower) # noise amplitude factor
+
 def getlogspec(signal,samplerate=16000,winlen=0.02,winstep=0.01,
                nfilt=26,nfft=399,lowfreq=0,highfreq=None,preemph=0.97,
                winfunc=lambda x:np.ones((x,))):
@@ -36,6 +34,7 @@ def getlogspec(signal,samplerate=16000,winlen=0.02,winstep=0.01,
     frames = ps.sigproc.framesig(signal, winlen*samplerate, winstep*samplerate, winfunc)
     pspec = ps.sigproc.logpowspec(frames,nfft)
     return pspec 
+
 def read_file(filename):
     file = wave.open(filename,'r')    
     params = file.getparams()
@@ -46,13 +45,6 @@ def read_file(filename):
     time = np.arange(0,wav_length) * (1.0/framerate)
     file.close()
     return wavedata, time, framerate
-def dense_to_one_hot(labels_dense, num_classes):
-  """Convert class labels from scalars to one-hot vectors."""
-  num_labels = labels_dense.shape[0]
-  index_offset = np.arange(num_labels) * num_classes
-  labels_one_hot = np.zeros((num_labels, num_classes))
-  labels_one_hot.flat[index_offset + labels_dense.ravel()] = 1
-  return labels_one_hot
 
 def zscore(data,mean,std):
     shape = np.array(data.shape,dtype = np.int32)
@@ -72,6 +64,7 @@ def normalization(data):
     std = np.std(data,axis=0)
     data = (data-mean)/std
     return data
+
 def mapminmax(data):
     shape = np.array(data.shape,dtype = np.int32)
     for i in range(shape[0]):
@@ -79,6 +72,7 @@ def mapminmax(data):
         max = np.max(data[i,:,:,0])
         data[i,:,:,0] = (data[i,:,:,0] - min)/((max - min)+eps)
     return data
+
 def generate_label(emotion,classnum):
     label = -1
     if(emotion == 'ang'):
@@ -95,15 +89,16 @@ def generate_label(emotion,classnum):
         label = 5
     return label
         
+
+FLAGS = flags.FLAGS
         
-def read_CASIA():
-    
+def read_CASIA(_):
     train_num = 2928
-    filter_num = 20
-    rootdir = '/home/jamhan/hxj/datasets/IEMOCAP_full_release'
-    traindata1 = np.empty((train_num*300,filter_num),dtype=np.float32)
-    traindata2 = np.empty((train_num*300,filter_num),dtype=np.float32)
-    traindata3 = np.empty((train_num*300,filter_num),dtype=np.float32)
+    filter_num = FLAGS.feature_size # feature bins
+    rootdir = FLAGS.dataset_path 
+    traindata1 = np.empty( (train_num*300, filter_num),dtype=np.float32)
+    traindata2 = np.empty( (train_num*300, filter_num),dtype=np.float32)
+    traindata3 = np.empty( (train_num*300, filter_num),dtype=np.float32)
     train_num = 0
     
     
@@ -134,7 +129,7 @@ def read_CASIA():
                         emotion = emot_map[wavname]
                         if(emotion in ['hap','ang','neu','sad']):
                              data, time, rate = read_file(filename)
-                             mel_spec = ps.logfbank(data,rate,nfilt = filter_num)
+                             mel_spec = ps.logfbank(data, rate, nfilt=filter_num)
                              delta1 = ps.delta(mel_spec, 2)
                              delta2 = ps.delta(delta1, 2)
                              
@@ -186,11 +181,9 @@ def read_CASIA():
                                             traindata3[train_num*300:(train_num+1)*300] = delta21
                                             train_num = train_num + 1
                                           
-                             else:
+                             else: # end if speacker 
                                  pass
-                                    
-                                 
-                        else:
+                        else: # end if emothion 
                             pass
     
     
@@ -203,7 +196,7 @@ def read_CASIA():
         output = './zscore'+str(filter_num)+'.pkl'
         #output = './IEMOCAP'+str(m)+'_'+str(filter_num)+'.pkl'
         f=open(output,'wb') 
-        cPickle.dump((mean1,std1,mean2,std2,mean3,std3),f)
+        pickle.dump((mean1,std1,mean2,std2,mean3,std3),f)
         f.close()           
     return
                 
@@ -211,8 +204,12 @@ def read_CASIA():
 
 
 if __name__=='__main__':
-    read_CASIA()
-    #print "test_num:", test_num
-    #print "train_num:", train_num
+    flags.DEFINE_string('dataset_path', 
+        default='/home/jamhan/hxj/datasets/IEMOCAP_full_release',
+        help='dataset path')
+    flags.DEFINE_integer('feature_size', default=40, help='feature size')
+    app.run(read_CASIA)
+    print("test_num:", test_num)
+    print("train_num:", train_num)
 #    n = wgn(x, 6)
 #    xn = x+n # 增加了6dBz信噪比噪声的信号

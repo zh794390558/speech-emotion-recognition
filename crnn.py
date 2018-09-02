@@ -20,11 +20,11 @@ tf.app.flags.DEFINE_integer ('checkpoint_secs',  60,         'checkpoint saving 
 # Global Constants
 # ================
 
-tf.app.flags.DEFINE_float   ('dropout_conv',     1,        'dropout rate for covvolutional layers')
-tf.app.flags.DEFINE_float   ('dropout_linear',   1,        'dropout rate for linear layer')
-tf.app.flags.DEFINE_float   ('dropout_lstm',     1,        'dropout rate for lstm')
-tf.app.flags.DEFINE_float   ('dropout_fully1',   1,        'dropout rate for fully connected layer1')
-tf.app.flags.DEFINE_float   ('dropout_fully2',   1,        'dropout rate for fully connected layer1')
+tf.app.flags.DEFINE_float   ('dropout_conv',     0.5,        'dropout rate for covvolutional layers')
+tf.app.flags.DEFINE_float   ('dropout_linear',   0.5,        'dropout rate for linear layer')
+tf.app.flags.DEFINE_float   ('dropout_lstm',     0.5,        'dropout rate for lstm')
+tf.app.flags.DEFINE_float   ('dropout_fully1',   0.5,        'dropout rate for fully connected layer1')
+tf.app.flags.DEFINE_float   ('dropout_fully2',   0.5,        'dropout rate for fully connected layer1')
 
 #decayed_learning rate
 tf.app.flags.DEFINE_float('decay_rate', 0.99, 'the lr decay rate')
@@ -34,7 +34,7 @@ tf.app.flags.DEFINE_float('beta2', 0.999, 'adam parameter beta2')
 #Moving Average
 tf.app.flags.DEFINE_integer('decay_steps', 570, 'the lr decay_step for optimizer')
 tf.app.flags.DEFINE_float('momentum', 0.99, 'the momentum')
-tf.app.flags.DEFINE_integer('num_epochs', 30000, 'maximum epochs')
+tf.app.flags.DEFINE_integer('num_epochs', 1000, 'maximum epochs')
 tf.app.flags.DEFINE_float   ('relu_clip',        20.0,        'ReLU clipping value for non-recurrant layers')
 
 # Adam optimizer (http://arxiv.org/abs/1412.6980) parameters
@@ -59,8 +59,8 @@ tf.app.flags.DEFINE_integer('linear_num', 786, 'hidden number of linear layer')
 tf.app.flags.DEFINE_integer('seq_len', 150, 'sequence length of lstm')
 tf.app.flags.DEFINE_integer('cell_num', 128, 'cell units of the lstm')
 tf.app.flags.DEFINE_integer('hidden1', 64, 'number of hidden units of fully connected layer')
-tf.app.flags.DEFINE_integer('hidden2', 4, 'number of softmax layer')
-tf.app.flags.DEFINE_integer('attention_size', 1, 'attention_size')
+tf.app.flags.DEFINE_integer('num_class', 4, 'classes number')
+tf.app.flags.DEFINE_integer('attention_size', 128, 'attention_size')
 tf.app.flags.DEFINE_boolean('attention', False, 'whether to use attention, False mean use max-pooling')
 
 FLAGS = tf.app.flags.FLAGS
@@ -69,15 +69,17 @@ FLAGS = tf.app.flags.FLAGS
 class CRNN(object):
     def __init__(self, mode):
         self.mode = mode
+        self.train = True if mode == 'train' else False 
         # log Mel-spectrogram
         self.attention = FLAGS.attention
-        self.inputs = tf.placeholder(tf.float32, [None, FLAGS.image_height, FLAGS.image_width, FLAGS.image_channel])
+        self.inputs = tf.placeholder(tf.float32, [None, FLAGS.image_height, FLAGS.image_width, FLAGS.image_channel], name='input')
         # emotion label
-        self.labels = tf.placeholder(tf.int32, shape=[None, 4])
+        self.labels = tf.placeholder(tf.int32, shape=[None, FLAGS.num_class])
         # lstm time step
         #self.seq_len = tf.placeholder(tf.int32, [None])
         # l2
         self._extra_train_ops = []
+
     def _conv2d(self, x, name, filter_size, in_channels, out_channels, strides):
         with tf.variable_scope(name):
             kernel = tf.get_variable(name='DW',
@@ -88,18 +90,20 @@ class CRNN(object):
             b = tf.get_variable(name='bais',
                                 shape=[out_channels],
                                 dtype=tf.float32,
-                                initializer=tf.constant_initializer())
+                                initializer=tf.constant_initializer(0.0))
 
             con2d_op = tf.nn.conv2d(x, kernel, [1, strides[0], strides[1], 1], padding='SAME')
 
         return tf.nn.bias_add(con2d_op, b) 
+
     def _max_pool(self, x, ksize, strides):
         return tf.nn.max_pool(x,
                               ksize=[1, ksize[0], ksize[1], 1],
                               strides=[1, strides[0], strides[1], 1],
                               padding='VALID',
                               name='max_pool')
-    def _linear(self,x,names,shapes):
+
+    def _linear(self, x, names, shapes):
         with tf.variable_scope(names):
             weights = tf.get_variable(name='weights',
                                       shape=shapes,
@@ -107,11 +111,13 @@ class CRNN(object):
             bias = tf.get_variable(name='bias',
                                    shape=shapes[1],
                                    initializer=tf.constant_initializer(0.0))
-        return tf.matmul(x,weights) + bias
+        return tf.matmul(x, weights) + bias
+
     def _leaky_relu(self, x, leakiness=0.0):
         return tf.where(tf.less(x, 0.0), leakiness * x, x, name='leaky_relu')
+
     def _batch_norm(self, name, x):
-        """Batch normalization."""
+        """Batch normalization for convlution."""
         with tf.variable_scope(name):
             params_shape = [x.get_shape()[-1]]
 
@@ -155,6 +161,7 @@ class CRNN(object):
             x_bn.set_shape(x.get_shape())
 
             return x_bn
+
     def _batch_norm_wrapper(self, name, inputs, decay = 0.999):
         #batch normalization for fully connected layer
         with tf.variable_scope(name):
@@ -175,7 +182,8 @@ class CRNN(object):
             else:
                 return tf.nn.batch_normalization(inputs,
                                                  pop_mean, pop_var, beta, scale, FLAGS.epsilon)
-    def _attention(self,inputs, attention_size, time_major=False, return_alphas=False):
+
+    def _attention(self, inputs, attention_size, time_major=False, return_alphas=False):
         
         if isinstance(inputs, tuple):
         # In case of Bi-RNN, concatenate the forward and the backward RNN outputs.
@@ -207,6 +215,7 @@ class CRNN(object):
             return output
         else:
             return output, alphas
+
     def _build_model(self):
         filters = [128, 512]
         filter_size = [5, 3]
@@ -217,55 +226,66 @@ class CRNN(object):
         with tf.variable_scope('cnn'):
             with tf.variable_scope('unit-1'):
                 x = self._conv2d(self.inputs, 'cnn-1', filter_size, FLAGS.image_channel, filters[0], filter_strides)
-                x = self._batch_norm('bn1', x)
+                #x = self._batch_norm('bn1', x)
+                x = tf.layers.batch_normalization(x, axis=-1, momentum=0.9, training=self.train, name='bn1')
                 x = self._leaky_relu(x, 0.01)
+                x = tf.layers.dropout(x, FLAGS.dropout_conv if self.mode == 'train' else 0.0) 
                 x = self._max_pool(x, pool1_size, pool1_size)
-#                print x.get_shape()
+
             with tf.variable_scope('unit-2'):
                 x = self._conv2d(x, 'cnn-2',  filter_size, filters[0], filters[1], filter_strides)
-                x = self._batch_norm('bn2', x)
+                #x = self._batch_norm('bn2', x)
+                x = tf.layers.batch_normalization(x, axis=-1, momentum=0.9, training=self.train, name='bn2')
                 x = self._leaky_relu(x, 0.01)
+                x = tf.layers.dropout(x, FLAGS.dropout_conv if self.mode == 'train' else 0.0) 
                 x = self._max_pool(x, pool2_size, pool2_size)
-#                print x.get_shape()
+
         with tf.variable_scope('linear'):
             # linear layer for dim reduction
-            x = tf.reshape(x,[-1,p*filters[1]])
-            x = self._linear(x,'linear1',[p*filters[1],FLAGS.linear_num])
-#            print x.get_shape()
+            #x = tf.reshape(x, [-1, p*filters[1]])
+            #x = self._linear(x, 'linear1', [p*filters[1], FLAGS.linear_num])
+            times, feat, filters = x.shape.as_list()[1:]
+            x = tf.reshape(x, [-1, times, feat*filters])
+            x = tf.layers.dense(x, FLAGS.linear_num, name='lineaer1')
+            x = tf.layers.dropout(x, FLAGS.dropout_linear if self.mode == 'train' else 0.0) 
+
         with tf.variable_scope('lstm'):
-            x = tf.reshape(x,[-1,FLAGS.seq_len,FLAGS.linear_num])
-            
+            #x = tf.reshape(x,[-1, FLAGS.seq_len, FLAGS.linear_num])
+            #x.eval().shape
+
             cell_fw = tf.contrib.rnn.BasicLSTMCell(FLAGS.cell_num, forget_bias=1.0)
-            if self.mode == 'train':
-                cell_fw = tf.contrib.rnn.DropoutWrapper(cell=cell_fw, output_keep_prob=FLAGS.dropout_lstm)
+            cell_fw = tf.contrib.rnn.DropoutWrapper(cell=cell_fw, output_keep_prob= 1 - FLAGS.dropout_lstm if self.mode == 'train' else 1.0)
 
             cell_bw = tf.contrib.rnn.BasicLSTMCell(FLAGS.cell_num, forget_bias=1.0)
-            if self.mode == 'train':
-                cell_bw = tf.contrib.rnn.DropoutWrapper(cell=cell_bw, output_keep_prob=FLAGS.dropout_lstm)
+            cell_bw = tf.contrib.rnn.DropoutWrapper(cell=cell_bw, output_keep_prob= 1 - FLAGS.dropout_lstm if self.mode == 'train' else 1.0)
             
             # Now we feed `linear` into the LSTM BRNN cell and obtain the LSTM BRNN output.
-            outputs, output_states = tf.nn.bidirectional_dynamic_rnn(cell_fw=cell_fw,
-                                                                       cell_bw=cell_bw,
-                                                                       inputs= x,
-                                                                       dtype=tf.float32,
-                                                                       time_major=False,
-                                                                       scope='LSTM1')
+            outputs, output_states = tf.nn.bidirectional_dynamic_rnn(cell_fw = cell_fw,
+                                                                     cell_bw = cell_bw,
+                                                                     inputs = x,
+                                                                     dtype = tf.float32,
+                                                                     time_major=False,
+                                                                     scope='LSTM1')
         with tf.variable_scope('time_pooling'):
-            if self.attention is not None:
+            if self.attention:
                 outputs, alphas = self._attention(outputs, FLAGS.attention_size, return_alphas=True)
             else:
-                outputs = tf.concat(outputs,2)
-                outputs = tf.reshape(outputs, [-1, FLAGS.seq_len,2*FLAGS.cell_num, 1])
-                outputs = self._max_pool(outputs,[FLAGS.seq_len,1],[FLAGS.seq_len,1])
-                outputs = tf.reshape(outputs, [-1,2*FLAGS.cell_num])
-#            print outputs.get_shape()
+                outputs = tf.concat(outputs, 2)
+                outputs = tf.expand_dim(outputs, axis=-1)
+                seq_len = tf.shape(outputs)[1]
+                outputs = self._max_pool(outputs, ksize=[seq_len, 1], strides=[seq_len, 1])
+                outputs = tf.reshape(outputs, [-1, 2*FLAGS.cell_num])
+            
         
         with tf.variable_scope('dense'):
-            y = self._linear(outputs,'dense-matmul',[2*FLAGS.cell_num,FLAGS.hidden1])
-            y = self._batch_norm_wrapper('dense-bn', y)
+            y = self._linear(outputs,'dense-matmul',[ 2 * FLAGS.cell_num, FLAGS.hidden1])
+            #y = self._batch_norm_wrapper('dense-bn', y)
+            y = tf.layers.batch_normalization(y, axis=-1, momentum=0.99, training=self.train, name='dense-bn')
             y = self._leaky_relu(y, 0.01)
+            y = tf.layers.dropout(y, FLAGS.dropout_fully1 if self.mode == 'train' else 0.0) 
         
-        self.logits = self._linear(y,'softmax',[FLAGS.hidden1,FLAGS.hidden2])
+        self.logits = self._linear(y,'softmax',[FLAGS.hidden1, FLAGS.num_class])
+        self.softmax = tf.nn.softmax(self.logits)
             
         
         
